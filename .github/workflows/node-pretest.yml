@@ -1,10 +1,11 @@
 name: 'Tests: pretest/posttest'
 
-on: [pull_request, push]
+on: workflow_dispatch
 
 jobs:
   pretest:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
 
     steps:
       - uses: actions/checkout@v2

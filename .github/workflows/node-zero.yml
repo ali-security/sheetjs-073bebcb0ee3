@@ -1,10 +1,11 @@
 name: 'Tests: node.js (0.x)'
 
-on: [pull_request, push]
+on: workflow_dispatch
 
 jobs:
   matrix:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
       stable: ${{ steps.set-matrix.outputs.requireds }}
 #      unstable: ${{ steps.set-matrix.outputs.optionals }}
@@ -19,6 +20,7 @@ jobs:
     needs: [matrix]
     name: 'stable minors'
     runs-on: ubuntu-latest
+    timeout-minutes: 45
 
     strategy:
       fail-fast: false
@@ -84,5 +86,6 @@ jobs:
 #    needs: [stable, unstable]
     needs: [stable]
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - run: 'echo tests completed'

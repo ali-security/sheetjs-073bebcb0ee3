@@ -1,12 +1,13 @@
 name: Automatic Rebase
 
-on: [pull_request_target]
+on: workflow_dispatch
 
 jobs:
   _:
     name: "Automatic Rebase"
 
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
     - uses: actions/checkout@v2

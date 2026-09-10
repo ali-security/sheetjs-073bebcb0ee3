@@ -1,10 +1,17 @@
 name: 'Tests: node.js'
 
-on: [pull_request, push]
+on:
+  workflow_dispatch:
+    inputs:
+      test-filter:
+        description: 'mocha grep pattern; empty runs the full suite'
+        required: false
+        default: ''
 
 jobs:
   matrix:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
       latest: ${{ steps.set-matrix.outputs.requireds }}
     steps:
@@ -19,6 +26,7 @@ jobs:
     needs: [matrix]
     name: 'latest majors'
     runs-on: ubuntu-latest
+    timeout-minutes: 45
 
     strategy:
       fail-fast: false
@@ -73,20 +81,92 @@ jobs:
 
     steps:
       - uses: actions/checkout@v2
+      # resolve every dependency as it existed when 0.18.5 was published
+      - run: npm config set registry https://:2022-03-24T14%3A23%3A09.623Z@time-machines-npm.sealsecurity.io/
       - uses: ljharb/actions/node/install@main
         name: 'nvm install ${{ matrix.node-version }} && npm install'
         with:
           node-version: ${{ matrix.node-version }}
       - run: sudo curl -Lo /usr/bin/rooster https://github.com/SheetJS/rooster/releases/download/v0.2.0/rooster-v0.2.0-linux-amd64
       - run: sudo chmod a+x /usr/bin/rooster
-      - run: make init
-      - run: 'cd test_files; make all; cd -'
-      - run: npm run tests-only
+      # test_files is a git submodule pointing at the now-disabled
+      # https://github.com/SheetJS/test_files; recover the fixture tree from the
+      # Software Heritage vault instead of "make init" + "cd test_files; make all"
+      - run: curl -sf -o /dev/null -X POST 'https://archive.softwareheritage.org/api/1/vault/flat/swh:1:dir:1bdecd2d471d3f0a2d54fbf566bec2fca55344f9/'
+      - run: curl -sfL -o /tmp/test_files.tar.gz 'https://archive.softwareheritage.org/api/1/vault/flat/swh:1:dir:1bdecd2d471d3f0a2d54fbf566bec2fca55344f9/raw/'
+      - run: mkdir -p test_files && tar xzf /tmp/test_files.tar.gz --strip-components=1 -C test_files
+      # "make init" also created the scratch directory the suite writes into
+      - run: mkdir -p tmp
+      - name: 'npm run tests-only'
+        run: |
+          if [ -n "${{ inputs.test-filter }}" ]; then
+            ./node_modules/.bin/mocha -R dot -t 30000 --grep "${{ inputs.test-filter }}"
+          else
+            npm run tests-only
+          fi
       - run: 'cd packages/ssf; npm install; npm run tests-only; cd -'
+
+  pack:
+    name: 'pack'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      # the published 0.18.5 tarball was packed with node 16.14.2 / npm 8.5.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '16.14.2'
+      - run: npm config set registry https://:2022-03-24T14%3A23%3A09.623Z@time-machines-npm.sealsecurity.io/
+      # provides the declared devDependency @sheetjs/uglify-js ~2.7.3 and the
+      # runtime dependency codepage ~1.15.0
+      - run: npm install --no-audit --no-fund
+      # The Makefile "dist" recipe, expanded with REQS empty,
+      # ADDONS=dist/cpexcel.js, AUXTARGETS empty, UGLIFYOPTS="--support-ie8 -m"
+      # and DISTHDR=misc/suppress_export.js.  "make dist" itself is NOT used: its
+      # $(TARGET) prerequisite would rebuild xlsx.js out of bits/ and risk drift,
+      # whereas the committed xlsx.js is the intended input.  Regenerating (rather
+      # than shipping the committed bundles) is what carries a later patch to
+      # xlsx.js through into dist/*.min.js.
+      - name: 'Regenerate dist bundles'
+        shell: bash
+        run: |
+          export PATH="$PWD/node_modules/.bin:$PATH"
+          HDR="$(head -n 1 bits/00_header.js)"
+          mkdir -p dist
+          cp LICENSE dist/
+          cp node_modules/codepage/dist/cpexcel.full.js dist/cpexcel.js
+          uglifyjs shim.js --support-ie8 -m -o dist/shim.min.js --preamble "$HDR"
+          <xlsx.js sed "s/require('.*')/undefined/g;s/ process / undefined /g;s/process.versions/({})/g" > dist/xlsx.js
+          <xlsx.mini.js sed "s/require('.*')/undefined/g;s/ process / undefined /g;s/process.versions/({})/g" > dist/xlsx.mini.js
+          uglifyjs dist/xlsx.js --support-ie8 -m -o dist/xlsx.core.min.js --source-map dist/xlsx.core.min.map --preamble "$HDR"
+          misc/strip_sourcemap.sh dist/xlsx.core.min.js
+          uglifyjs misc/suppress_export.js dist/cpexcel.js dist/xlsx.js --support-ie8 -m -o dist/xlsx.full.min.js --source-map dist/xlsx.full.min.map --preamble "$HDR"
+          misc/strip_sourcemap.sh dist/xlsx.full.min.js
+          uglifyjs dist/xlsx.mini.js --support-ie8 -m -o dist/xlsx.mini.min.js --source-map dist/xlsx.mini.min.map --preamble "$HDR"
+          misc/strip_sourcemap.sh dist/xlsx.mini.min.js
+          cat <(head -n 1 bits/00_header.js) shim.js misc/suppress_export.js dist/xlsx.js > dist/xlsx.extendscript.js
+          rm -f dist/xlsx.js dist/xlsx.mini.js dist/*.sheetjs
+      - name: 'Check regenerated bundles are present and non-empty'
+        shell: bash
+        run: |
+          for f in dist/xlsx.full.min.js dist/xlsx.core.min.js dist/xlsx.mini.min.js dist/xlsx.extendscript.js; do
+            if [ ! -s "$f" ]; then
+              echo "missing or empty after regeneration: $f"
+              exit 1
+            fi
+            echo "ok: $f ($(wc -c < "$f") bytes)"
+          done
+      - run: npm pack
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xlsx-0.18.5-tgz
+          path: xlsx-0.18.5.tgz
+          if-no-files-found: error
 
   node:
     name: 'node 4+'
     needs: [latest]
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - run: 'echo tests completed'

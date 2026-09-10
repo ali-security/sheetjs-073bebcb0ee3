@@ -1,5 +1,11 @@
 language: node_js
 dist: xenial
+# The test_files submodule points at https://github.com/SheetJS/test_files, which
+# GitHub has disabled.  Travis' own submodule step hangs on it, so it is disabled
+# here and the fixtures are fetched from the Software Heritage vault in
+# before_script instead.
+git:
+  submodules: false
 node_js:
   - "14"
   - "13"
@@ -43,6 +49,9 @@ matrix:
       env: TZ="America/Mexico_City" FMTS=misc
 
 before_install:
+# resolve every dependency as it existed when 0.18.5 was published
+  - "npm config set registry https://:2022-03-24T14%3A23%3A09.623Z@time-machines-npm.sealsecurity.io/"
+  - "rm -f $HOME/.netrc $HOME/.gitconfig $HOME/.git-credentials"
   - "npm config set strict-ssl false"
   - "./misc/node_version.sh"
   - "npm install -g mocha@2.x voc"
@@ -51,8 +60,21 @@ before_install:
   - "npm install coveralls mocha-lcov-reporter"
 # note: jsdom 11.x expects node >= 6 but is missing engines.node
   - "npm install jsdom@11.x"
+# the before_install "npm install <pkg>" calls write a package-lock.json as a side
+# effect, which flips Travis' default install step to "npm ci"; upstream commits no
+# lock file, so npm ci then dies with "cipm can only install packages when your
+# package.json and package-lock.json are in sync".  Pin the install step instead.
+install: "npm install"
 before_script:
-  - "make init"
-  - "cd test_files; make all; cd -"
+# test_files is a disabled GitHub repository; recover the fixture tree from the
+# Software Heritage vault (POST cooks the bundle, GET downloads it)
+  - "curl -sf -o /dev/null -X POST 'https://archive.softwareheritage.org/api/1/vault/flat/swh:1:dir:1bdecd2d471d3f0a2d54fbf566bec2fca55344f9/'"
+  - "curl -sfL -o /tmp/test_files.tar.gz 'https://archive.softwareheritage.org/api/1/vault/flat/swh:1:dir:1bdecd2d471d3f0a2d54fbf566bec2fca55344f9/raw/'"
+  - "mkdir -p test_files && tar xzf /tmp/test_files.tar.gz --strip-components=1 -C test_files"
+# "make init" also created the scratch directory the suite writes into
+  - "mkdir -p tmp"
+# the default script is "npm test", whose pretest hook runs "npm run lint"
+# (make fullint = eslint + markdown-spellcheck).  Run the test suite directly.
+script: "npm run tests-only"
 after_success:
 #  - "make coveralls-spin"

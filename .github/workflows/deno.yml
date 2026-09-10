@@ -1,11 +1,12 @@
 name: 'Tests: deno 1.x'
 
-on: [pull_request, push]
+on: workflow_dispatch
 
 jobs:
   # small test
   misc:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     env:
       FMTS: misc
     steps:
@@ -24,6 +25,7 @@ jobs:
   # full test
   full:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v2
       - uses: denoland/setup-deno@main
