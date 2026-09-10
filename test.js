@@ -2587,3 +2587,133 @@ mft.forEach(function(x) {
 		case "yes-formula": formulae = true; break;
 	}});
 }); });
+
+/* `X` is otherwise only assigned by `it('should load')` in the `source` suite, so
+   any filtered run (`mocha --grep`) that skips that one test leaves it undefined.
+   A root hook makes the library available to whichever suites the filter kept. */
+if(typeof before != 'undefined') before(function() { if(!X) X = require(modp); });
+
+/* CVE-2023-30533: decode_cell maps a digit-free comment anchor like "__proto__"
+   to row -1 / column -1, so `sheet[comment.ref]` used to resolve through the
+   prototype chain and the comment list was pushed onto a shared built-in. */
+function pp_u16(n/*:number*/)/*:string*/ { return String.fromCharCode(n & 255) + String.fromCharCode((n >> 8) & 255); }
+function pp_u32(n/*:number*/)/*:string*/ { return pp_u16(n & 0xFFFF) + pp_u16((n >> 16) & 0xFFFF); }
+/* minimal STORED-entry ZIP writer -- enough to hand-build OOXML part vectors */
+function pp_zip(entries/*:Array<Array<string> >*/)/*:string*/ {
+	var loc = "", cd = "", off = 0, i = 0, nm = "", body = "", lfh = "";
+	for(i = 0; i < entries.length; ++i) {
+		nm = entries[i][0]; body = entries[i][1];
+		lfh = "PK\x03\x04" + pp_u16(10) + pp_u16(0) + pp_u16(0) + pp_u16(0) + pp_u16(0) +
+			pp_u32(0) + pp_u32(body.length) + pp_u32(body.length) + pp_u16(nm.length) + pp_u16(0) + nm + body;
+		cd += "PK\x01\x02" + pp_u16(20) + pp_u16(10) + pp_u16(0) + pp_u16(0) + pp_u16(0) + pp_u16(0) +
+			pp_u32(0) + pp_u32(body.length) + pp_u32(body.length) + pp_u16(nm.length) + pp_u16(0) +
+			pp_u16(0) + pp_u16(0) + pp_u16(0) + pp_u32(0) + pp_u32(off) + nm;
+		loc += lfh; off += lfh.length;
+	}
+	return loc + cd + "PK\x05\x06" + pp_u16(0) + pp_u16(0) + pp_u16(entries.length) + pp_u16(entries.length) +
+		pp_u32(cd.length) + pp_u32(off) + pp_u16(0);
+}
+
+var PP_XH = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\r\n';
+var PP_MAIN = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';
+var PP_REL = 'http://schemas.openxmlformats.org/package/2006/relationships';
+var PP_ODR = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
+var PP_TC = 'http://schemas.microsoft.com/office/spreadsheetml/2018/threadedcomments';
+
+/* one-sheet XLSX whose comments part anchors "pwn" at `ref` (skipped when null)
+   and "legit" at the valid address B1.  `threaded` picks the threaded comments
+   part ([MS-XLSX] 2.1.17) over the legacy comments part (18.7). */
+function pp_book(ref/*:?string*/, threaded/*:boolean*/)/*:string*/ {
+	var ctype = threaded ? 'application/vnd.ms-excel.threadedcomments+xml' :
+		'application/vnd.openxmlformats-officedocument.spreadsheetml.comments+xml';
+	var cpath = threaded ? '/xl/threadedComments/threadedComment1.xml' : '/xl/comments1.xml';
+	var ctarget = threaded ? '../threadedComments/threadedComment1.xml' : '../comments1.xml';
+	var crel = threaded ? 'http://schemas.microsoft.com/office/2017/10/relationships/threadedComment' : PP_ODR + '/comments';
+	var body = "";
+	if(threaded) body = PP_XH + '<ThreadedComments xmlns="' + PP_TC + '">' +
+		(ref === null ? "" : '<threadedComment ref="' + ref + '" dT="2023-04-01T00:00:00.00" personId="{54EE7950-7262-4200-6969-000000000000}" id="{54EE7951-7262-4200-6969-000000000001}"><text>pwn</text></threadedComment>') +
+		'<threadedComment ref="B1" dT="2023-04-01T00:00:00.00" personId="{54EE7950-7262-4200-6969-000000000000}" id="{54EE7951-7262-4200-6969-000000000002}"><text>legit</text></threadedComment>' +
+		'</ThreadedComments>';
+	else body = PP_XH + '<comments xmlns="' + PP_MAIN + '"><authors><author>SheetJ5</author></authors><commentList>' +
+		(ref === null ? "" : '<comment ref="' + ref + '" authorId="0"><text><t>pwn</t></text></comment>') +
+		'<comment ref="B1" authorId="0"><text><t>legit</t></text></comment>' +
+		'</commentList></comments>';
+	return pp_zip([
+		['[Content_Types].xml', PP_XH + '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">' +
+			'<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>' +
+			'<Default Extension="xml" ContentType="application/xml"/>' +
+			'<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>' +
+			'<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>' +
+			'<Override PartName="' + cpath + '" ContentType="' + ctype + '"/></Types>'],
+		['_rels/.rels', PP_XH + '<Relationships xmlns="' + PP_REL + '">' +
+			'<Relationship Id="rId1" Type="' + PP_ODR + '/officeDocument" Target="xl/workbook.xml"/></Relationships>'],
+		['xl/workbook.xml', PP_XH + '<workbook xmlns="' + PP_MAIN + '" xmlns:r="' + PP_ODR + '">' +
+			'<sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets></workbook>'],
+		['xl/_rels/workbook.xml.rels', PP_XH + '<Relationships xmlns="' + PP_REL + '">' +
+			'<Relationship Id="rId1" Type="' + PP_ODR + '/worksheet" Target="worksheets/sheet1.xml"/></Relationships>'],
+		['xl/worksheets/sheet1.xml', PP_XH + '<worksheet xmlns="' + PP_MAIN + '"><dimension ref="A1:B1"/>' +
+			'<sheetData><row r="1"><c r="A1"><v>1</v></c><c r="B1"><v>2</v></c></row></sheetData></worksheet>'],
+		['xl/worksheets/_rels/sheet1.xml.rels', PP_XH + '<Relationships xmlns="' + PP_REL + '">' +
+			'<Relationship Id="rId1" Type="' + crel + '" Target="' + ctarget + '"/></Relationships>'],
+		[cpath.slice(1), body]
+	]);
+}
+
+/* the object a bare `sheet[ref]` lookup would reach through the prototype chain */
+function pp_sink(ref/*:string*/)/*:any*/ { var probe = {}; return probe[ref]; }
+var PP_REFS = ['__proto__', 'constructor', 'toString', 'valueOf', 'hasOwnProperty', 'isPrototypeOf', '1'];
+/* drop anything a failing assertion left on a shared built-in */
+function pp_scrub() {
+	var i = 0, sink = null;
+	for(i = 0; i < PP_REFS.length; ++i) {
+		sink = pp_sink(PP_REFS[i]);
+		if(sink && Object.prototype.hasOwnProperty.call(sink, 'c')) delete sink.c;
+	}
+	if(Object.prototype.hasOwnProperty.call(Object.prototype, 'c')) delete Object.prototype.c;
+}
+
+function pp_check(ws/*:any*/, ref/*:string*/, dense/*:boolean*/) {
+	/* an out-of-range anchor must not widen or rewrite the sheet range */
+	assert.equal(ws['!ref'], 'A1:B1', 'ref ' + ref + ' must not alter !ref');
+	/* nothing may be written through the prototype chain */
+	assert.ok(!Object.prototype.hasOwnProperty.call(Object.prototype, 'c'), 'ref ' + ref + ' must not set Object.prototype.c');
+	var sink = pp_sink(ref);
+	assert.ok(!sink || !Object.prototype.hasOwnProperty.call(sink, 'c'), 'ref ' + ref + ' must not set c on the inherited value');
+	if(dense) {
+		assert.ok(!Object.prototype.hasOwnProperty.call(ws, '-1'), 'ref ' + ref + ' must not create dense row -1');
+		assert.ok(!Object.prototype.hasOwnProperty.call(ws[0], '-1'), 'ref ' + ref + ' must not create dense column -1');
+	} else assert.ok(!Object.prototype.hasOwnProperty.call(ws, ref), 'ref ' + ref + ' must not create a cell of that name');
+	/* the valid anchor in the same part must still attach, as an OWN property:
+	   once Object.prototype.c exists, `if(!cell.c)` is satisfied through the
+	   prototype chain and every later comment lands on the shared array */
+	var cell = dense ? ws[0][1] : ws.B1;
+	assert.ok(!!cell, 'B1 must still be present alongside ref ' + ref);
+	assert.ok(Object.prototype.hasOwnProperty.call(cell, 'c'), 'B1 must own its comment list, not inherit one');
+	assert.equal(cell.c.length, 1, 'B1 must hold exactly the one valid comment');
+	assert.equal(cell.c[0].t, 'legit', 'B1 must keep the valid comment text');
+}
+
+describe('prototype pollution via comment anchors', function() {
+	before(function() { if(!X) X = require(modp); });
+	afterEach(pp_scrub);
+
+	[false, true].forEach(function(threaded) {
+		var part = threaded ? 'threaded' : 'legacy';
+		it('should attach ' + part + ' comments from a hand-built package', function() {
+			var ws = X.read(pp_book(null, threaded), {type:'binary'}).Sheets.Sheet1;
+			assert.equal(ws['!ref'], 'A1:B1');
+			assert.ok(Object.prototype.hasOwnProperty.call(ws.B1, 'c'));
+			assert.equal(ws.B1.c.length, 1);
+			assert.equal(ws.B1.c[0].t, 'legit');
+		});
+		[false, true].forEach(function(dense) {
+			var mode = dense ? 'dense' : 'sparse';
+			PP_REFS.forEach(function(ref) {
+				it('should ignore ' + part + ' comment ref "' + ref + '" (' + mode + ')', function() {
+					var o = dense ? {type:'binary', dense:true} : {type:'binary'};
+					pp_check(X.read(pp_book(ref, threaded), o).Sheets.Sheet1, ref, dense);
+				});
+			});
+		});
+	});
+});
